@@ -143,7 +143,35 @@
 <div id="root"></div>
 
 <script type="text/babel">
-const { useState, useCallback, useRef, useMemo } = React;
+const { useState, useCallback, useRef, useMemo, useEffect } = React;
+
+// ─── Supabase config ──────────────────────────────────────────────────────────
+const SB_URL = 'https://oiclnaqsxiuiltnogzss.supabase.co';
+const SB_KEY = 'sb_publishable_EcKSFysP8AIbdC7k3MrN_Q_J0Kq_vCo';
+
+async function sbSave(weekLabel, data) {
+  const res = await fetch(`${SB_URL}/rest/v1/mel_snapshots`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': SB_KEY,
+      'Authorization': `Bearer ${SB_KEY}`,
+      'Prefer': 'return=minimal'
+    },
+    body: JSON.stringify({ week_label: weekLabel, data })
+  });
+  if (!res.ok) throw new Error(`Save failed: ${res.status}`);
+}
+
+async function sbLoad() {
+  const res = await fetch(
+    `${SB_URL}/rest/v1/mel_snapshots?order=created_at.desc&limit=1`,
+    { headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` } }
+  );
+  if (!res.ok) throw new Error(`Load failed: ${res.status}`);
+  const rows = await res.json();
+  return rows.length ? rows[0] : null;
+}
 
 // ─── Sortable hook ────────────────────────────────────────────────────────────
 function useSortable(rows) {
@@ -751,7 +779,7 @@ function IndividualView({ person, carrier, onBack }) {
 }
 
 // ─── Leaderboard ──────────────────────────────────────────────────────────────
-function Leaderboard({ data, onSelectPerson, onDownloadSnapshot }) {
+function Leaderboard({ data, onSelectPerson, onSaveToTeam, saving, saveMsg }) {
   const { people, carrier } = data;
   const [sortKey, setSortKey] = useState('composite');
   const [sortDir, setSortDir] = useState('desc');
@@ -804,10 +832,14 @@ function Leaderboard({ data, onSelectPerson, onDownloadSnapshot }) {
             <div style={{fontSize:'13px',fontWeight:600,color:'#003087'}}>Carrier AVGD</div>
             <div style={{fontSize:'12px',color:'#666'}}>{carrier.overallOpps.toLocaleString()} total opportunities</div>
           </div>
-          {!(window.__SNAPSHOT__||null) && onDownloadSnapshot && (
-            <button className="btn btn-primary btn-sm" onClick={onDownloadSnapshot} title="Export a standalone HTML snapshot to share on SharePoint">
-              ↓ Publish Snapshot
-            </button>
+          {onSaveToTeam && (
+            <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:'4px'}}>
+              <button className="btn btn-primary btn-sm" onClick={onSaveToTeam} disabled={saving}
+                title="Save current scores so the whole team sees them">
+                {saving ? 'Saving…' : '☁ Save to Team'}
+              </button>
+              {saveMsg && <div style={{fontSize:'11px',color:saveMsg.startsWith('✓')?'var(--green)':'var(--avr)'}}>{saveMsg}</div>}
+            </div>
           )}
         </div>
       </div>
@@ -963,33 +995,29 @@ function UploadView({ parsedFiles, onFiles, onClear, summary }) {
   );
 }
 
-// ─── Snapshot export ──────────────────────────────────────────────────────────
-function downloadSnapshot(data, weekLabel) {
-  fetch(window.location.href)
-    .then(r => r.text())
-    .then(src => {
-      const injection = `<script>window.__SNAPSHOT__ = ${JSON.stringify(data)}; window.__SNAPSHOT_WEEK__ = ${JSON.stringify(weekLabel)};<\/script>`;
-      const out = src.replace('</head>', injection + '\n</head>');
-      const blob = new Blob([out], { type: 'text/html' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `MEL-Snapshot-${weekLabel}.html`;
-      a.click();
-    });
-}
-
 // ─── App Root ─────────────────────────────────────────────────────────────────
 function App() {
   const [tab, setTab] = useState('upload');
-  const [parsedFiles, setParsedFiles] = useState([]); // [{ sheets, fileType, fileName }]
+  const [parsedFiles, setParsedFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [selectedPerson, setSelectedPerson] = useState(null);
+  const [cloudData, setCloudData] = useState(null);
+  const [cloudLabel, setCloudLabel] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState(null);
+
+  useEffect(() => {
+    sbLoad().then(row => {
+      if (row) { setCloudData(row.data); setCloudLabel(row.week_label); setTab('leaderboard'); }
+    }).catch(() => {});
+  }, []);
 
   const data = useMemo(() => {
-    if (!parsedFiles.length) return null;
-    return processData(parsedFiles);
-  }, [parsedFiles]);
+    if (parsedFiles.length) return processData(parsedFiles);
+    if (cloudData) return cloudData;
+    return null;
+  }, [parsedFiles, cloudData]);
 
   const summary = useMemo(() => {
     if (!data) return null;
@@ -1030,6 +1058,19 @@ function App() {
     setTab('leaderboard');
   }, []);
 
+  const handleSave = useCallback(async () => {
+    if (!data || !parsedFiles.length) return;
+    setSaving(true); setSaveMsg(null);
+    try {
+      const weekLabel = new Date().toISOString().slice(0, 10);
+      await sbSave(weekLabel, data);
+      setCloudData(data); setCloudLabel(weekLabel);
+      setSaveMsg('✓ Saved! Team will see this on next load.');
+      setParsedFiles([]);
+    } catch(e) { setSaveMsg('✗ Save failed: ' + e.message); }
+    finally { setSaving(false); }
+  }, [data, parsedFiles]);
+
   return (
     <div>
       <div className="app-header">
@@ -1044,9 +1085,14 @@ function App() {
         <div className="app-header-accent"></div>
       </div>
 
-      {(window.__SNAPSHOT__||null) && (
+      {cloudLabel && !parsedFiles.length && (
         <div className="snapshot-banner">
-          📸 Snapshot published <strong>{window.__SNAPSHOT_WEEK__}</strong> — read-only view. To refresh data, open the live app and re-upload.
+          📊 Showing team data saved <strong>{cloudLabel}</strong> — upload new files to refresh.
+        </div>
+      )}
+      {cloudLabel && parsedFiles.length > 0 && (
+        <div className="snapshot-banner" style={{background:'#1a3a1a'}}>
+          ⚠️ Showing your newly uploaded data — click <strong>Save to Team</strong> to publish it.
         </div>
       )}
 
@@ -1055,29 +1101,25 @@ function App() {
              onClick={() => { if(data) { setSelectedPerson(null); setTab('leaderboard'); } }}>
           Team Leaderboard {data ? `(${data.people.length})` : ''}
         </div>
-        {!(window.__SNAPSHOT__||null) && (
-          <div className={`tab ${tab === 'upload' ? 'active' : ''}`} onClick={() => { setSelectedPerson(null); setTab('upload'); }}>
+        <div className={`tab ${tab === 'upload' ? 'active' : ''}`} onClick={() => { setSelectedPerson(null); setTab('upload'); }}>
             Upload {parsedFiles.length > 0 && `(${parsedFiles.length})`}
           </div>
-        )}
       </div>
 
       <div className="content">
         {loading && <div className="loading">⏳ Processing Excel data...</div>}
         {error && <div style={{background:'#ffebee',border:'1px solid #ffcdd2',borderRadius:'6px',padding:'12px 16px',color:'#c62828',marginBottom:'12px'}}>{error}</div>}
 
-        {!loading && tab === 'upload' && !(window.__SNAPSHOT__||null) && (
+        {!loading && tab === 'upload' && (
           <UploadView parsedFiles={parsedFiles} onFiles={handleFiles} onClear={handleClear} summary={summary} />
         )}
 
-        {!loading && (tab === 'leaderboard' || (window.__SNAPSHOT__||null)) && (
+        {!loading && (tab === 'leaderboard') && (
           !data
             ? <div className="empty-state"><h3>No data loaded</h3><p>Upload a BTMS scorecard file to get started.</p></div>
             : <Leaderboard data={data} onSelectPerson={handleSelectPerson}
-                onDownloadSnapshot={() => {
-                  const weekLabel = new Date().toISOString().slice(0,10);
-                  downloadSnapshot(data, weekLabel);
-                }} />
+                onSaveToTeam={parsedFiles.length ? handleSave : null}
+                saving={saving} saveMsg={saveMsg} />
         )}
 
         {!loading && tab === 'individual' && selectedPerson && data && (
