@@ -10,6 +10,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script>try{Object.keys(localStorage).filter(k=>k.startsWith('babel')).forEach(k=>localStorage.removeItem(k))}catch(e){}</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
 <style>
   /* ── Avenger Logistics Brand Variables ── */
@@ -128,7 +129,8 @@
   .defect-table { font-size: 11px; }
   .defect-table thead th { background: #364d60; font-size: 11px; padding: 6px 9px; }
   .defect-table td { padding: 5px 9px; font-size: 11px; }
-  .fail-row td { background: #fff5f5; }
+  .fail-row td { background: #fff; }
+  .fail-row.row-alt td { background: #eef3fa !important; }
 
   /* ── Footnote ── */
   .footnote { font-size: 11px; color: var(--dgray); font-style: italic; padding: 8px 16px; border-top: 1px solid var(--border); background: #fafafa; }
@@ -376,8 +378,12 @@ function processData(parsedFiles) {
     const otpDefectsPA = otpDefects.filter(r => r['214 Event'] === 'PA');
 
     const estOtpOpps = loadShare * carrier.otpOpps;
+    const estDAOpps = estOtpOpps * 0.50;
+    const estPAOpps = estOtpOpps * 0.50;
+    const daScore = estDAOpps > 0 ? Math.max(0, (estDAOpps - otpDefectsDA.length) / estDAOpps) : 1.0;
+    const paScore = estPAOpps > 0 ? Math.max(0, (estPAOpps - otpDefectsPA.length) / estPAOpps) : 1.0;
     const otpScore = estOtpOpps > 0
-      ? Math.max(0, (estOtpOpps - otpDefects.length) / estOtpOpps)
+      ? daScore * 0.60 + paScore * 0.40
       : null;
     const otpOppsEst = Math.round(estOtpOpps);
 
@@ -413,7 +419,8 @@ function processData(parsedFiles) {
     const etaOppsEst = Math.round(estEtaOpps);
 
     // ── Comm ─────────────────────────────────────────────────────
-    const commScore = otcScore * 0.55 + etaScore * 0.25 + gpsScore * 0.20;
+    // Telematics (10%) not available — assumed 100% for all; weights: StopUpd 45 + ETA 25 + GPS 20 + Telematics 10 = 100
+    const commScore = otcScore * 0.45 + etaScore * 0.25 + gpsScore * 0.20 + 0.10;
 
     // ── ASN ──────────────────────────────────────────────────────
     const asnRows = merged.asn.filter(r => normName(r['Lane Admin']) === person);
@@ -442,6 +449,8 @@ function processData(parsedFiles) {
       composite,
       otp: { score: otpScore, opps: otpOppsEst, defects: otpDefects.length,
              daDefects: otpDefectsDA.length, paDefects: otpDefectsPA.length,
+             daScore, paScore,
+             daOpps: Math.ceil(estOtpOpps / 2), paOpps: Math.floor(estOtpOpps / 2),
              allRows: otpRows },
       comm: { score: commScore,
               otc: { score: otcScore, opps: otcOppsEst, defects: otcDefects.length, rows: otcRows },
@@ -504,9 +513,14 @@ function CollapsibleDefect({ title, count, children }) {
 
 function fmtDT(val) {
   if (!val) return '—';
-  if (val instanceof Date) return val.toLocaleDateString() + ' ' + val.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-  const s = String(val);
-  return s.length > 20 ? s.slice(0, 19) : s;
+  const d = val instanceof Date ? val : new Date(val);
+  if (isNaN(d)) return String(val);
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const dy = String(d.getDate()).padStart(2, '0');
+  const yr = String(d.getFullYear()).slice(2);
+  const hr = String(d.getHours()).padStart(2, '0');
+  const mn = String(d.getMinutes()).padStart(2, '0');
+  return `${mo}/${dy}/${yr} ${hr}:${mn}`;
 }
 
 function OTPDefectTable({ rows }) {
@@ -517,25 +531,21 @@ function OTPDefectTable({ rows }) {
     <table className="defect-table">
       <thead><tr>
         <STh col="Load#" sk={sk} sd={sd} onSort={handleSort}>Load #</STh>
+        <STh col="Load ID" sk={sk} sd={sd} onSort={handleSort}>PTN</STh>
         <STh col="Route Number" sk={sk} sd={sd} onSort={handleSort}>Route</STh>
-        <STh col="Route Date" sk={sk} sd={sd} onSort={handleSort}>Date</STh>
-        <STh col="Stop Site" sk={sk} sd={sd} onSort={handleSort}>Site</STh>
         <STh col="214 Event" sk={sk} sd={sd} onSort={handleSort}>Event</STh>
-        <STh col="Scheduled Arrival Time" sk={sk} sd={sd} onSort={handleSort}>Scheduled</STh>
-        <STh col="Reported Time Local" sk={sk} sd={sd} onSort={handleSort}>Actual</STh>
-        <STh col="Late Reason Code" sk={sk} sd={sd} onSort={handleSort}>Code</STh>
+        <STh col="Scheduled Arrival" sk={sk} sd={sd} onSort={handleSort}>Schd Time</STh>
+        <STh col="Reported DTT Local" sk={sk} sd={sd} onSort={handleSort}>Rptd Time</STh>
       </tr></thead>
       <tbody>
         {sorted.map((r, i) => (
           <tr key={i} className="fail-row">
             <td><a href={`https://brokerage.modetrans.com/fats/loadform.php?id=${r['Load#']}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--avb)',fontWeight:700}}>{r['Load#']}</a></td>
+            <td>{r['Load ID'] || '—'}</td>
             <td>{r['Route Number']}</td>
-            <td>{r['Route Date'] instanceof Date ? r['Route Date'].toLocaleDateString() : r['Route Date']}</td>
-            <td>{r['Stop Site']}</td>
             <td><strong>{r['214 Event']}</strong></td>
-            <td>{r['Scheduled Arrival Time'] || fmtDT(r['Scheduled Arrival'])}</td>
-            <td>{r['Reported Time Local'] || fmtDT(r['Reported DTT Local'])}</td>
-            <td>{r['Late Reason Code'] || '—'}</td>
+            <td>{fmtDT(r['Scheduled Arrival'])}</td>
+            <td>{fmtDT(r['Reported DTT Local'])}</td>
           </tr>
         ))}
       </tbody>
@@ -547,33 +557,58 @@ function OTCDefectTable({ rows }) {
   const defects = rows.filter(r => { const d = parseFloat(r['Communication Delay']); return !isNaN(d) && d > 30; });
   const { sorted, sortCol: sk, sortDir: sd, handleSort } = useSortable(defects);
   if (!defects.length) return <p style={{padding:'12px',color:'#888',fontSize:'11px'}}>No late stop updates.</p>;
+  const abbrevEvent = v => {
+    if (!v) return '—';
+    const s = v.toLowerCase();
+    if (s.includes('pickup') && s.includes('arrival'))   return 'PA';
+    if (s.includes('pickup') && s.includes('departure')) return 'PD';
+    if (s.includes('delivery') && s.includes('arrival')) return 'DA';
+    if (s.includes('delivery') && s.includes('departure')) return 'DD';
+    return v;
+  };
+  const srcColor = v => {
+    if (!v) return {};
+    const s = v.toUpperCase();
+    if (s === 'EDI') return {color:'var(--green)', fontWeight:700};
+    if (s === 'WEB') return {color:'var(--yellow)', fontWeight:700};
+    return {};
+  };
   return (
     <table className="defect-table">
       <thead><tr>
         <STh col="Load#" sk={sk} sd={sd} onSort={handleSort}>Load #</STh>
-        <STh col="Route Number" sk={sk} sd={sd} onSort={handleSort}>Route</STh>
-        <STh col="Route Date" sk={sk} sd={sd} onSort={handleSort}>Date</STh>
+        <STh col="Load ID" sk={sk} sd={sd} onSort={handleSort}>PTN</STh>
+        <STh col="Completed Date" sk={sk} sd={sd} onSort={handleSort}>Date</STh>
         <STh col="Stop No" sk={sk} sd={sd} onSort={handleSort}>Stop</STh>
         <STh col="Event Description" sk={sk} sd={sd} onSort={handleSort}>Event</STh>
-        <STh col="Reported Time ET" sk={sk} sd={sd} onSort={handleSort}>Actual Time</STh>
-        <STh col="Communication Time ET" sk={sk} sd={sd} onSort={handleSort}>Submitted</STh>
+        <STh col="Reported DTT ET" sk={sk} sd={sd} onSort={handleSort}>Act Time (ET)</STh>
+        <STh col="Communication DTT ET" sk={sk} sd={sd} onSort={handleSort}>Sent Time (ET)</STh>
         <STh col="Communication Delay" sk={sk} sd={sd} onSort={handleSort}>Delay (min)</STh>
         <STh col="Source" sk={sk} sd={sd} onSort={handleSort}>Source</STh>
       </tr></thead>
       <tbody>
-        {sorted.map((r, i) => (
-          <tr key={i} className="fail-row">
-            <td><a href={`https://brokerage.modetrans.com/fats/loadform.php?id=${r['Load#']}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--avb)',fontWeight:700}}>{r['Load#']}</a></td>
-            <td>{r['Route Number']}</td>
-            <td>{r['Route Date'] instanceof Date ? r['Route Date'].toLocaleDateString() : r['Route Date']}</td>
+        {(() => {
+          const grouping = sk === null || sk === 'Load#';
+          let gIdx = 0;
+          return sorted.map((r, i) => {
+            if (grouping && (i === 0 || r['Load#'] !== sorted[i-1]['Load#'])) gIdx++;
+            const showLoad = !grouping || i === 0 || r['Load#'] !== sorted[i-1]['Load#'];
+            const altRow = grouping && gIdx % 2 === 0;
+          return (
+          <tr key={i} className={`fail-row${altRow ? ' row-alt' : ''}`}>
+            <td>{showLoad ? <a href={`https://brokerage.modetrans.com/fats/loadform.php?id=${r['Load#']}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--avb)',fontWeight:700}}>{r['Load#']}</a> : ''}</td>
+            <td>{showLoad ? (r['Load ID'] || '—') : ''}</td>
+            <td>{r['Completed Date'] ? new Date(r['Completed Date']).toLocaleDateString('en-US',{month:'numeric',day:'numeric',year:'numeric'}) : '—'}</td>
             <td>{r['Stop No']} — {r['Stop Site']}</td>
-            <td>{r['Event Description']}</td>
-            <td>{r['Reported Time ET'] || fmtDT(r['Reported DTT ET'])}</td>
-            <td>{r['Communication Time ET'] || fmtDT(r['Communication DTT ET'])}</td>
+            <td>{abbrevEvent(r['Event Description'])}</td>
+            <td>{fmtDT(r['Reported DTT ET']) || r['Reported Time ET'] || '—'}</td>
+            <td>{fmtDT(r['Communication DTT ET']) || r['Communication Time ET'] || '—'}</td>
             <td><strong style={{color:'#c62828'}}>{Math.round(r['Communication Delay'])}</strong></td>
-            <td>{r['Source']}</td>
+            <td><span style={srcColor(r['Source'])}>{r['Source'] || '—'}</span></td>
           </tr>
-        ))}
+          );
+          });
+        })()}
       </tbody>
     </table>
   );
@@ -582,17 +617,26 @@ function OTCDefectTable({ rows }) {
 function ETADefectTable({ rows }) {
   const { sorted, sortCol: sk, sortDir: sd, handleSort } = useSortable(rows);
   if (!rows.length) return <p style={{padding:'12px',color:'#888',fontSize:'11px'}}>No ETA defects.</p>;
+  const okX = v => (v === 1 || v === '1' || v === 'YES') ? '✅' : '❌';
   return (
     <table className="defect-table">
       <thead><tr>
         <STh col="Load#" sk={sk} sd={sd} onSort={handleSort}>Load #</STh>
+        <STh col="Load ID" sk={sk} sd={sd} onSort={handleSort}>PTN</STh>
+        <STh col="Origin ID" sk={sk} sd={sd} onSort={handleSort}>Lane</STh>
         <STh col="Route Name" sk={sk} sd={sd} onSort={handleSort}>Route</STh>
-        <STh col="Start Date" sk={sk} sd={sd} onSort={handleSort}>Date</STh>
-        <STh col="Distance" sk={sk} sd={sd} onSort={handleSort}>Dist (mi)</STh>
-        <STh col="Scheduled Delivery Arrival Time" sk={sk} sd={sd} onSort={handleSort}>Sched Delivery</STh>
-        <STh col="Actual Delivery Arrival Time" sk={sk} sd={sd} onSort={handleSort}>Actual Delivery</STh>
-        <STh col="First ETA Success" sk={sk} sd={sd} onSort={handleSort}>1st ETA OK</STh>
-        <STh col="Late Delivery ETA Success" sk={sk} sd={sd} onSort={handleSort}>Late Dlv ETA OK</STh>
+        <STh col="Start Date" sk={sk} sd={sd} onSort={handleSort}>Start Date</STh>
+        <STh col="Scheduled Delivery Arrival Date/Time" sk={sk} sd={sd} onSort={handleSort}>Sch Del</STh>
+        <STh col="Actual Delivery Arrival Date/Time" sk={sk} sd={sd} onSort={handleSort}>Act Del</STh>
+        <STh col="Late Delivery" sk={sk} sd={sd} onSort={handleSort}>Late?</STh>
+        <STh col="Actual Final Pick Departure Date/Time ET" sk={sk} sd={sd} onSort={handleSort}>Act PD</STh>
+        <STh col="First ETA Reported" sk={sk} sd={sd} onSort={handleSort}>1st ETA Rptd</STh>
+        <STh col="First ETA Rcvd" sk={sk} sd={sd} onSort={handleSort}>1st ETA Rcvd</STh>
+        <STh col="First ETA Success" sk={sk} sd={sd} onSort={handleSort}>1st ET OK</STh>
+        <STh col="Last ETA Reported" sk={sk} sd={sd} onSort={handleSort}>Last ETA Rptd</STh>
+        <STh col="Last ETA Rcvd" sk={sk} sd={sd} onSort={handleSort}>Last ETA Rcvd</STh>
+        <STh col="Late Delivery ETA Success" sk={sk} sd={sd} onSort={handleSort}>Late Del ETA OK</STh>
+        <STh col="CutOff" sk={sk} sd={sd} onSort={handleSort}>ETA Cutoff</STh>
         <STh col="Last ETA Accurate" sk={sk} sd={sd} onSort={handleSort}>ETA Accurate</STh>
       </tr></thead>
       <tbody>
@@ -600,17 +644,26 @@ function ETADefectTable({ rows }) {
           const fe = r['First ETA Success'];
           const ld = r['Late Delivery ETA Success'];
           const la = r['Last ETA Accurate'];
+          const late = String(r['Late Delivery'] || '').toUpperCase();
           return (
             <tr key={i} className="fail-row">
               <td><a href={`https://brokerage.modetrans.com/fats/loadform.php?id=${r['Load#']}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--avb)',fontWeight:700}}>{r['Load#']}</a></td>
+              <td>{r['Load ID'] || '—'}</td>
+              <td>{r['Origin ID'] && r['Destination ID'] ? `${r['Origin ID']} - ${r['Destination ID']}` : '—'}</td>
               <td>{r['Route Name']}</td>
-              <td>{r['Start Date'] instanceof Date ? r['Start Date'].toLocaleDateString() : r['Start Date']}</td>
-              <td>{r['Distance']}</td>
-              <td>{r['Scheduled Delivery Arrival Time'] || fmtDT(r['Scheduled Delivery Arrival Date/Time'])}</td>
-              <td>{r['Actual Delivery Arrival Time'] || fmtDT(r['Actual Delivery Arrival Date/Time'])}</td>
-              <td>{fe === 1 || fe === '1' ? '✅' : '❌'}</td>
-              <td>{r['Late Delivery'] === 'YES' ? (ld === 1 || ld === '1' ? '✅' : '❌') : 'N/A'}</td>
-              <td>{la === 1 || la === '1' ? '✅' : '❌'}</td>
+              <td>{r['Start Date'] ? new Date(r['Start Date']).toLocaleDateString('en-US',{month:'numeric',day:'numeric',year:'numeric'}) : '—'}</td>
+              <td>{fmtDT(r['Scheduled Delivery Arrival Date/Time'])}</td>
+              <td>{fmtDT(r['Actual Delivery Arrival Date/Time'])}</td>
+              <td>{late === 'YES' ? '✅' : late === 'NO' ? '❌' : '—'}</td>
+              <td>{fmtDT(r['Actual Final Pick Departure Date/Time ET'])}</td>
+              <td>{fmtDT(r['First ETA Reported'])}</td>
+              <td>{fmtDT(r['First ETA Rcvd'])}</td>
+              <td>{fe !== undefined && fe !== null && fe !== '' ? okX(fe) : '—'}</td>
+              <td>{fmtDT(r['Last ETA Reported'])}</td>
+              <td>{fmtDT(r['Last ETA Rcvd'])}</td>
+              <td>{r['Late Delivery'] === 'YES' ? okX(ld) : 'N/A'}</td>
+              <td>{fmtDT(r['CutOff'])}</td>
+              <td>{la !== undefined && la !== null && la !== '' ? okX(la) : '—'}</td>
             </tr>
           );
         })}
@@ -627,9 +680,10 @@ function GPSDefectTable({ rows }) {
     <table className="defect-table">
       <thead><tr>
         <STh col="Load#" sk={sk} sd={sd} onSort={handleSort}>Load #</STh>
+        <STh col="Load ID" sk={sk} sd={sd} onSort={handleSort}>PTN</STh>
+        <STh col="Origin ID" sk={sk} sd={sd} onSort={handleSort}>Lane</STh>
         <STh col="Route Name" sk={sk} sd={sd} onSort={handleSort}>Route</STh>
-        <STh col="Start Date" sk={sk} sd={sd} onSort={handleSort}>Date</STh>
-        <STh col="Distance" sk={sk} sd={sd} onSort={handleSort}>Dist (mi)</STh>
+        <STh col="Start Date" sk={sk} sd={sd} onSort={handleSort}>Start Date</STh>
         <STh col="Drive Time" sk={sk} sd={sd} onSort={handleSort}>Drive Time (hrs)</STh>
         <STh col="Expected Pings" sk={sk} sd={sd} onSort={handleSort}>Expected Pings</STh>
         <STh col="Actual Transactions" sk={sk} sd={sd} onSort={handleSort}>Actual Pings</STh>
@@ -639,9 +693,10 @@ function GPSDefectTable({ rows }) {
         {sorted.map((r, i) => (
           <tr key={i} className="fail-row">
             <td><a href={`https://brokerage.modetrans.com/fats/loadform.php?id=${r['Load#']}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--avb)',fontWeight:700}}>{r['Load#']}</a></td>
+            <td>{r['Load ID'] || '—'}</td>
+            <td>{r['Origin ID'] && r['Destination ID'] ? `${r['Origin ID']} - ${r['Destination ID']}` : '—'}</td>
             <td>{r['Route Name']}</td>
-            <td>{r['Start Date'] instanceof Date ? r['Start Date'].toLocaleDateString() : r['Start Date']}</td>
-            <td>{r['Distance']}</td>
+            <td>{r['Start Date'] ? new Date(r['Start Date']).toLocaleDateString('en-US',{month:'numeric',day:'numeric',year:'numeric'}) : '—'}</td>
             <td>{r['Drive Time'] ? Number(r['Drive Time']).toFixed(1) : '—'}</td>
             <td>{r['Expected Pings']}</td>
             <td>{r['Actual Transactions']}</td>
@@ -682,8 +737,9 @@ function ASNDefectTable({ rows }) {
 function IndividualView({ person, carrier, onBack }) {
   const c = getColor(person.composite, 'composite');
   const rows = [
-    { cat: 'On-Time Performance', sub: null, opps: person.otp.opps, def: person.otp.defects,
-      defDetail: `${person.otp.daDefects} DA / ${person.otp.paDefects} PA`, score: person.otp.score, type: 'otp' },
+    { cat: 'On-Time Performance', sub: null,               opps: person.otp.opps,   def: person.otp.defects,  defDetail: null, score: person.otp.score,  type: 'otp' },
+    { cat: null, sub: 'Delivery (60%)',  opps: person.otp.daOpps, def: person.otp.daDefects, defDetail: null, score: person.otp.daScore, type: 'otp' },
+    { cat: null, sub: 'Pickup (40%)',    opps: person.otp.paOpps, def: person.otp.paDefects, defDetail: null, score: person.otp.paScore, type: 'otp' },
     { cat: 'Communication', sub: null, opps: null, def: null, score: person.comm.score, type: 'comm' },
     { cat: null, sub: 'Stop Updates', opps: person.comm.otc.opps, def: person.comm.otc.defects, score: person.comm.otc.score, type: 'comm' },
     { cat: null, sub: 'ETA',          opps: person.comm.eta.opps, def: person.comm.eta.defects, score: person.comm.eta.score, type: 'comm' },
@@ -780,7 +836,7 @@ function IndividualView({ person, carrier, onBack }) {
 
 // ─── Leaderboard ──────────────────────────────────────────────────────────────
 function Leaderboard({ data, onSelectPerson, onSaveToTeam, saving, saveMsg }) {
-  const { people, carrier } = data;
+  const { people, carrier, totalLoads } = data;
   const [sortKey, setSortKey] = useState('composite');
   const [sortDir, setSortDir] = useState('desc');
 
@@ -824,12 +880,11 @@ function Leaderboard({ data, onSelectPerson, onSaveToTeam, saving, saveMsg }) {
     <div>
       <div className="leaderboard-header">
         <div>
-          <div className="page-title">MEL Individual Scorecard</div>
+          <div className="page-title">Individual Scorecard</div>
           <div className="note">Scores estimated from load-share allocation. See methodology note below.</div>
         </div>
         <div style={{display:'flex',alignItems:'center',gap:'16px'}}>
           <div style={{textAlign:'right'}}>
-            <div style={{fontSize:'13px',fontWeight:600,color:'#003087'}}>Carrier AVGD</div>
             <div style={{fontSize:'12px',color:'#666'}}>{carrier.overallOpps.toLocaleString()} total opportunities</div>
           </div>
           {onSaveToTeam && (
@@ -852,8 +907,8 @@ function Leaderboard({ data, onSelectPerson, onSaveToTeam, saving, saveMsg }) {
               <Th k="composite">Composite</Th>
               <th style={{textAlign:'left'}}>Name</th>
               <Th k="otp">OTP</Th>
-              <Th k="comm">Comm</Th>
-              <Th k="otc">Stop Upd.</Th>
+              <Th k="comm">OTC</Th>
+              <Th k="otc">Event Upd.</Th>
               <Th k="eta">ETA</Th>
               <Th k="gps">GPS</Th>
               <Th k="asn">ASN</Th>
@@ -874,7 +929,7 @@ function Leaderboard({ data, onSelectPerson, onSaveToTeam, saving, saveMsg }) {
               <td className="score-cell"><span className={`score ${getColor(carrier.etaScore, 'comm')}`}>{pct(carrier.etaScore)}</span></td>
               <td className="score-cell"><span className={`score ${getColor(carrier.gpsScore, 'comm')}`}>{pct(carrier.gpsScore)}</span></td>
               <td className="score-cell"><span className={`score ${getColor(carrier.asnScore, 'asn')}`}>{pct(carrier.asnScore)}</span></td>
-              <td style={{color:'#888'}}>{carrier.overallOpps.toLocaleString()}</td>
+              <td style={{color:'#888'}}>{totalLoads.toLocaleString()}</td>
             </tr>
             {sorted.map((p, i) => (
               <tr key={p.name} onClick={() => onSelectPerson(p)}>
@@ -1062,7 +1117,8 @@ function App() {
     if (!data || !parsedFiles.length) return;
     setSaving(true); setSaveMsg(null);
     try {
-      const weekLabel = new Date().toISOString().slice(0, 10);
+      const _d = new Date();
+      const weekLabel = _d.toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'}) + ' ' + _d.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit'});
       await sbSave(weekLabel, data);
       setCloudData(data); setCloudLabel(weekLabel);
       setSaveMsg('✓ Saved! Team will see this on next load.');
