@@ -1066,11 +1066,11 @@ function App() {
         {loading && <div className="loading">⏳ Processing Excel data...</div>}
         {error && <div style={{background:'#ffebee',border:'1px solid #ffcdd2',borderRadius:'6px',padding:'12px 16px',color:'#c62828',marginBottom:'12px'}}>{error}</div>}
 
-        {!loading && tab === 'upload' && (
+        {!loading && tab === 'upload' && !(window.__SNAPSHOT__||null) && (
           <UploadView parsedFiles={parsedFiles} onFiles={handleFiles} onClear={handleClear} summary={summary} />
         )}
 
-        {!loading && (tab === 'leaderboard') && (
+        {!loading && (tab === 'leaderboard' || (window.__SNAPSHOT__||null)) && (
           !data
             ? <div className="empty-state"><h3>No data loaded</h3><p>Upload a BTMS scorecard file to get started.</p></div>
             : <Leaderboard data={data} onSelectPerson={handleSelectPerson}
